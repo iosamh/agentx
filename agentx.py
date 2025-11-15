@@ -445,229 +445,306 @@ class MedicalSentimentAnalyzer:
 # ============================================================================
 # GOOGLE SHEETS DATABASE MANAGER
 # ============================================================================
-
 class GoogleSheetsManager:
-    """Manages all Google Sheets operations"""
+    """Manages all Google Sheets operations - FIXED VERSION"""
     
     def __init__(self, connection: GSheetsConnection):
+        """Initialize with Streamlit GSheetsConnection"""
         self.conn = connection
         self.cache = {}
         self.last_sync = {}
-        
+    
     def read_sheet(self, worksheet_name: str, use_cache: bool = True) -> pd.DataFrame:
         """Read data from Google Sheets with caching"""
         try:
-            # Check cache
+            # Check cache validity
             if use_cache and worksheet_name in self.cache:
                 last_sync = self.last_sync.get(worksheet_name, datetime.min)
                 if datetime.now() - last_sync < timedelta(minutes=5):
-                    return self.cache[worksheet_name]
+                    return self.cache[worksheet_name].copy()
             
-            # Read from sheets
+            # Read from sheets - this is the CORRECT way
             df = self.conn.read(worksheet=worksheet_name)
             
+            # Handle empty sheets
+            if df is None or df.empty:
+                return pd.DataFrame()
+            
             # Update cache
-            self.cache[worksheet_name] = df
+            self.cache[worksheet_name] = df.copy()
             self.last_sync[worksheet_name] = datetime.now()
             
             return df
+            
         except Exception as e:
-            st.error(f"Error reading {worksheet_name}: {e}")
+            st.warning(f"Could not read {worksheet_name}: {str(e)}")
             return pd.DataFrame()
     
-    def append_to_sheet(self, worksheet_name: str, data: Union[Dict, List[Dict]], create_if_missing: bool = True) -> bool:
-        """Append data to Google Sheets"""
+    def append_to_sheet(self, worksheet_name: str, data: Union[Dict, List[Dict]]) -> bool:
+        """Append data to Google Sheets - WORKING VERSION"""
         try:
-            # Convert to DataFrame
+            # Convert single dict to list
             if isinstance(data, dict):
                 data = [data]
+            
+            # Convert to DataFrame
             new_df = pd.DataFrame(data)
             
             # Read existing data
             try:
-                existing_df = self.read_sheet(worksheet_name, use_cache=False)
-            except:
-                if create_if_missing:
+                existing_df = self.conn.read(worksheet=worksheet_name)
+                if existing_df is None or existing_df.empty:
                     existing_df = pd.DataFrame()
-                else:
-                    return False
+            except Exception:
+                existing_df = pd.DataFrame()
             
             # Combine data
-            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+            if existing_df.empty:
+                combined_df = new_df
+            else:
+                combined_df = pd.concat([existing_df, new_df], ignore_index=True)
             
             # Update sheet
             self.conn.update(worksheet=worksheet_name, data=combined_df)
             
-            # Clear cache for this sheet
+            # Clear cache
             if worksheet_name in self.cache:
                 del self.cache[worksheet_name]
+            if worksheet_name in self.last_sync:
+                del self.last_sync[worksheet_name]
             
             return True
+            
         except Exception as e:
-            st.error(f"Error appending to {worksheet_name}: {e}")
+            st.error(f"Error appending to {worksheet_name}: {str(e)}")
             return False
     
     def update_sheet(self, worksheet_name: str, data: pd.DataFrame) -> bool:
-        """Update entire sheet"""
+        """Update entire sheet with new data"""
         try:
+            # Ensure data is DataFrame
+            if not isinstance(data, pd.DataFrame):
+                data = pd.DataFrame(data)
+            
+            # Update sheet
             self.conn.update(worksheet=worksheet_name, data=data)
             
             # Clear cache
             if worksheet_name in self.cache:
                 del self.cache[worksheet_name]
+            if worksheet_name in self.last_sync:
+                del self.last_sync[worksheet_name]
             
             return True
+            
         except Exception as e:
-            st.error(f"Error updating {worksheet_name}: {e}")
+            st.error(f"Error updating {worksheet_name}: {str(e)}")
             return False
     
-    def get_user_profile(self, user_id: str) -> Optional[UserProfile]:
+    def clear_sheet(self, worksheet_name: str) -> bool:
+        """Clear all data from a sheet"""
+        try:
+            empty_df = pd.DataFrame()
+            return self.update_sheet(worksheet_name, empty_df)
+        except Exception as e:
+            st.error(f"Error clearing {worksheet_name}: {str(e)}")
+            return False
+    
+    def get_row_count(self, worksheet_name: str) -> int:
+        """Get number of rows in worksheet"""
+        try:
+            df = self.read_sheet(worksheet_name, use_cache=False)
+            return len(df) if not df.empty else 0
+        except:
+            return 0
+    
+    def filter_data(self, worksheet_name: str, column: str, value: str) -> pd.DataFrame:
+        """Filter data by column value"""
+        try:
+            df = self.read_sheet(worksheet_name)
+            if df.empty or column not in df.columns:
+                return pd.DataFrame()
+            return df[df[column] == value]
+        except Exception as e:
+            st.error(f"Error filtering {worksheet_name}: {str(e)}")
+            return pd.DataFrame()
+    
+    def search_column(self, worksheet_name: str, column: str, search_term: str) -> pd.DataFrame:
+        """Search for rows containing search term in specified column"""
+        try:
+            df = self.read_sheet(worksheet_name)
+            if df.empty or column not in df.columns:
+                return pd.DataFrame()
+            return df[df[column].astype(str).str.contains(search_term, case=False, na=False)]
+        except Exception as e:
+            st.error(f"Error searching {worksheet_name}: {str(e)}")
+            return pd.DataFrame()
+    
+    def get_user_profile(self, user_id: str, user_sheet: str = "user_profiles") -> Optional[Dict]:
         """Get user profile from sheets"""
         try:
-            df = self.read_sheet(SHEETS_CONFIG["user_sheet"])
+            df = self.read_sheet(user_sheet)
             
-            if not df.empty and "user_id" in df.columns:
-                user_data = df[df["user_id"] == user_id]
-                if not user_data.empty:
-                    row = user_data.iloc[0].to_dict()
-                    return UserProfile(
-                        user_id=row["user_id"],
-                        name=row["name"],
-                        email=row["email"],
-                        role=row["role"],
-                        specialty=row["specialty"],
-                        experience_level=row["experience_level"],
-                        total_sessions=int(row.get("total_sessions", 0)),
-                        total_messages=int(row.get("total_messages", 0)),
-                        quiz_scores=json.loads(row.get("quiz_scores", "[]")),
-                        completed_modules=json.loads(row.get("completed_modules", "[]")),
-                        weak_areas=json.loads(row.get("weak_areas", "[]")),
-                        strong_areas=json.loads(row.get("strong_areas", "[]")),
-                        last_active=datetime.fromisoformat(row.get("last_active", datetime.now().isoformat())),
-                        created_at=datetime.fromisoformat(row.get("created_at", datetime.now().isoformat())),
-                        preferences=json.loads(row.get("preferences", "{}"))
-                    )
-            return None
+            if df.empty or "user_id" not in df.columns:
+                return None
+            
+            user_data = df[df["user_id"] == user_id]
+            if user_data.empty:
+                return None
+            
+            # Return as dictionary
+            return user_data.iloc[0].to_dict()
+            
         except Exception as e:
-            st.error(f"Error getting user profile: {e}")
+            st.error(f"Error getting user profile: {str(e)}")
             return None
     
-    def save_user_profile(self, profile: UserProfile) -> bool:
+    def save_user_profile(self, user_data: Dict, user_sheet: str = "user_profiles") -> bool:
         """Save or update user profile"""
         try:
-            df = self.read_sheet(SHEETS_CONFIG["user_sheet"])
-            profile_dict = profile.to_dict()
+            df = self.read_sheet(user_sheet, use_cache=False)
             
+            # Check if user exists
             if not df.empty and "user_id" in df.columns:
-                # Update existing
-                mask = df["user_id"] == profile.user_id
-                if mask.any():
-                    for key, value in profile_dict.items():
+                if user_data["user_id"] in df["user_id"].values:
+                    # Update existing user
+                    mask = df["user_id"] == user_data["user_id"]
+                    for key, value in user_data.items():
                         df.loc[mask, key] = value
                 else:
-                    # Add new
-                    df = pd.concat([df, pd.DataFrame([profile_dict])], ignore_index=True)
+                    # Add new user
+                    df = pd.concat([df, pd.DataFrame([user_data])], ignore_index=True)
             else:
-                # Create new
-                df = pd.DataFrame([profile_dict])
+                # Create new dataframe
+                df = pd.DataFrame([user_data])
             
-            return self.update_sheet(SHEETS_CONFIG["user_sheet"], df)
+            return self.update_sheet(user_sheet, df)
+            
         except Exception as e:
-            st.error(f"Error saving user profile: {e}")
+            st.error(f"Error saving user profile: {str(e)}")
             return False
     
-    def save_session(self, session: ChatSession) -> bool:
-        """Save chat session to sheets"""
+    def save_chat_session(self, session_data: Dict, session_sheet: str = "chat_sessions") -> bool:
+        """Save chat session data"""
         try:
-            # Save to main session sheet
-            session_dict = session.to_dict()
-            success = self.append_to_sheet(SHEETS_CONFIG["main_sheet"], session_dict)
-            
-            # Save detailed chat history
-            if success and session.messages:
-                chat_data = []
-                for i, msg in enumerate(session.messages):
-                    chat_data.append({
-                        "session_id": session.session_id,
-                        "user_id": session.user_id,
-                        "message_index": i,
-                        "role": msg.get("role"),
-                        "content": msg.get("content"),
-                        "timestamp": msg.get("timestamp", datetime.now().isoformat()),
-                        "metadata": json.dumps(msg.get("metadata", {}))
-                    })
-                self.append_to_sheet(SHEETS_CONFIG["chat_sheet"], chat_data)
-            
-            return success
+            return self.append_to_sheet(session_sheet, session_data)
         except Exception as e:
-            st.error(f"Error saving session: {e}")
+            st.error(f"Error saving chat session: {str(e)}")
             return False
     
-    def get_analytics(self, user_id: Optional[str] = None, days: int = 30) -> Analytics:
-        """Get analytics from sheets"""
+    def save_quiz_result(self, quiz_data: Dict, quiz_sheet: str = "quiz_results") -> bool:
+        """Save quiz result"""
         try:
-            analytics = Analytics()
+            return self.append_to_sheet(quiz_sheet, quiz_data)
+        except Exception as e:
+            st.error(f"Error saving quiz result: {str(e)}")
+            return False
+    
+    def get_user_sessions(self, user_id: str, session_sheet: str = "chat_sessions") -> pd.DataFrame:
+        """Get all sessions for a user"""
+        try:
+            return self.filter_data(session_sheet, "user_id", user_id)
+        except Exception as e:
+            st.error(f"Error getting user sessions: {str(e)}")
+            return pd.DataFrame()
+    
+    def get_analytics(self, user_id: Optional[str] = None, session_sheet: str = "chat_sessions") -> Dict:
+        """Get analytics data"""
+        try:
+            df = self.read_sheet(session_sheet)
             
-            # Read sessions
-            df = self.read_sheet(SHEETS_CONFIG["main_sheet"])
             if df.empty:
-                return analytics
-            
-            # Filter by date
-            cutoff_date = datetime.now() - timedelta(days=days)
-            df["start_time"] = pd.to_datetime(df["start_time"])
-            df = df[df["start_time"] >= cutoff_date]
+                return {}
             
             # Filter by user if specified
-            if user_id:
+            if user_id and "user_id" in df.columns:
                 df = df[df["user_id"] == user_id]
             
-            if df.empty:
-                return analytics
+            analytics = {
+                "total_sessions": len(df),
+                "total_messages": df.get("message_count", pd.Series()).sum() if "message_count" in df.columns else 0,
+            }
             
-            # Calculate metrics
-            analytics.total_sessions = len(df)
-            analytics.total_messages = df["message_count"].sum() if "message_count" in df.columns else 0
-            analytics.avg_messages_per_session = analytics.total_messages / analytics.total_sessions if analytics.total_sessions > 0 else 0
-            
-            # Module usage
-            if "module" in df.columns:
-                analytics.module_usage = df["module"].value_counts().to_dict()
-            
-            # Intent distribution
-            if "intents" in df.columns:
-                all_intents = []
-                for intents_str in df["intents"].dropna():
-                    try:
-                        intents = json.loads(intents_str)
-                        all_intents.extend(intents)
-                    except:
-                        pass
-                analytics.intent_distribution = dict(Counter(all_intents))
-            
-            # Quiz performance
-            if "quiz_results" in df.columns:
-                quiz_scores = []
-                for results_str in df["quiz_results"].dropna():
-                    try:
-                        results = json.loads(results_str)
-                        for result in results:
-                            if "score" in result:
-                                quiz_scores.append(result["score"])
-                    except:
-                        pass
-                if quiz_scores:
-                    analytics.quiz_performance = {
-                        "avg_score": np.mean(quiz_scores),
-                        "min_score": min(quiz_scores),
-                        "max_score": max(quiz_scores),
-                        "total_quizzes": len(quiz_scores)
-                    }
+            # Calculate averages
+            if "message_count" in df.columns:
+                analytics["avg_messages"] = df["message_count"].mean()
             
             return analytics
+            
         except Exception as e:
-            st.error(f"Error getting analytics: {e}")
-            return Analytics()
+            st.error(f"Error getting analytics: {str(e)}")
+            return {}
+
+
+# ============================================================================
+# SIMPLE UPLOAD FUNCTION - Works exactly like your old project
+# ============================================================================
+
+def upload_to_gsheet(data: List, conn: GSheetsConnection, 
+                     worksheet_name: str = "chatsheet",
+                     columns: Optional[List[str]] = None) -> bool:
+    """
+    Uploads data to Google Sheets - SIMPLIFIED VERSION that works
+    
+    Parameters:
+        data (list): List of lists or list of dicts to upload
+        conn (GSheetsConnection): Streamlit Google Sheets connection
+        worksheet_name (str): Name of worksheet to update
+        columns (list): Column names (required if data is list of lists)
+    
+    Returns:
+        bool: True if successful, False otherwise
+    
+    Example:
+        # Method 1: List of lists
+        data = [["user1", "Hello", "Test", 1], ["user2", "Hi", "Test2", 2]]
+        columns = ["User ID", "Chat", "Notes", "Attempts"]
+        upload_to_gsheet(data, conn, "chatsheet", columns)
+        
+        # Method 2: List of dicts
+        data = [
+            {"user_id": "user1", "message": "Hello", "notes": "Test"},
+            {"user_id": "user2", "message": "Hi", "notes": "Test2"}
+        ]
+        upload_to_gsheet(data, conn, "chatsheet")
+    """
+    try:
+        # Convert list of lists to DataFrame
+        if isinstance(data, list) and len(data) > 0:
+            if isinstance(data[0], (list, tuple)):
+                if columns is None:
+                    st.error("Columns parameter required for list of lists")
+                    return False
+                new_df = pd.DataFrame(data, columns=columns)
+            else:
+                # List of dicts
+                new_df = pd.DataFrame(data)
+        else:
+            return False
+        
+        # Read existing data
+        try:
+            existing_data = conn.read(worksheet=worksheet_name)
+            if existing_data is None or existing_data.empty:
+                existing_data = pd.DataFrame()
+        except Exception:
+            existing_data = pd.DataFrame()
+        
+        # Combine data
+        if existing_data.empty:
+            updated_data = new_df
+        else:
+            updated_data = pd.concat([existing_data, new_df], ignore_index=True)
+        
+        # Update sheet
+        conn.update(worksheet=worksheet_name, data=updated_data)
+        
+        st.success(f"✅ Successfully uploaded {len(new_df)} rows to {worksheet_name}")
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Error uploading to {worksheet_name}: {str(e)}")
+        return False
 
 # ============================================================================
 # KNOWLEDGE BASE MANAGER
@@ -1663,4 +1740,5 @@ def main():
     st.caption(f"{SYSTEM_NAME} v{VERSION} | Medical Training AI Assistant | Powered by OpenAI & Google Sheets")
 
 if __name__ == "__main__":
+
     main()
