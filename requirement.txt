@@ -1,0 +1,41 @@
+streamlit
+openai
+langchain-openai
+langchain-core
+pandas
+python-dotenv
+st-gsheets-connection
+
+pandas
+numpy
+
+# API & Language Models
+openai
+langchain
+langchain-openai
+langchain-core
+langchain-community
+
+# Vector Store & Embeddings
+faiss-cpu
+
+# NLP & Text Processing
+nltk
+scikit-learn
+scipy
+
+# Data Types & Utilities
+pydantic
+python-dateutil
+
+# Additional Utilities
+python-dotenv
+pytz
+
+# Development & Testing (Optional)
+pytest
+black
+flake8
+
+# Performance & Caching
+cachetools
